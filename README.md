@@ -1,6 +1,10 @@
 Thermometer
 ========================================
 
+
+
+Basic indoor thermometer using a TMP36. The output is displayed on a blue 7-segment serial display.
+
 Documentation
 --------------
 * Hookup Guide
