@@ -1,16 +1,27 @@
 /*
- Weather Shield Example
- By: Nathan Seidle
- SparkFun Electronics
- Date: June 10th, 2016
- License: This code is public domain but you buy me a beer if you use this and we meet someday (Beerware license).
+  Weather Shield Example
+  By: Nathan Seidle
+  SparkFun Electronics
+  Date: June 10th, 2016
+  License: This code is public domain but you buy me a beer if you use this and we meet someday (Beerware license).
 
- This example prints the current humidity, air pressure, temperature and light levels.
+  This example prints the current humidity, air pressure, temperature and light levels.
 
- The weather shield is capable of a lot. Be sure to checkout the other more advanced examples for creating
- your own weather station.
+  The weather shield is capable of a lot. Be sure to checkout the other more advanced examples for creating
+  your own weather station.
 
- */
+*/
+
+#include <SPI.h> // Include the Arduino SPI library
+// We'll use analog input 0 to measure the temperature sensor's
+// signal pin.
+
+// Define the SS pin
+//  This is the only pin we can move around to any available
+//  digital pin.
+const int ssPin = 9;
+
+char tempString[10];  // Will be used with sprintf to create strings
 
 #include <Wire.h> //I2C needed for sensors
 #include "SparkFunMPL3115A2.h" //Pressure sensor - Search "SparkFun MPL3115" and install from Library Manager
@@ -31,9 +42,36 @@ const byte BATT = A2;
 //Global Variables
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 long lastSecond; //The millis counter to see when a second rolls by
+float temp_h, pressure, tempf, light_lvl, batt_lvl;
+int degreesF_int;
 
 void setup()
 {
+  // -------- SPI initialization
+  pinMode(ssPin, OUTPUT);  // Set the SS pin as an output
+  digitalWrite(ssPin, HIGH);  // Set the SS pin HIGH
+  SPI.begin();  // Begin SPI hardware
+  SPI.setClockDivider(SPI_CLOCK_DIV64);  // Slow down SPI clock
+  // --------
+
+  // Clear the display, and then turn on all segments and decimals
+  clearDisplaySPI();  // Clears display, resets cursor
+
+  // Custom function to send four bytes via SPI
+  //  The SPI.transfer function only allows sending of a single
+  //  byte at a time.
+  s7sSendStringSPI("-HI-");
+  setDecimalsSPI(0b111111);  // Turn on all decimals, colon, apos
+
+  // Flash brightness values at the beginning
+  setBrightnessSPI(0);  // Lowest brightness
+  delay(1500);
+  setBrightnessSPI(255);  // High brightness
+  delay(1500);
+
+  // Clear the display before jumping into loop
+  clearDisplaySPI();
+
   Serial.begin(9600);
   Serial.println("Weather Shield Example");
 
@@ -74,7 +112,7 @@ void loop()
       Serial.println("I2C communication to sensors is not working. Check solder connections.");
 
       //Try re-initializing the I2C comm and the sensors
-      myPressure.begin(); 
+      myPressure.begin();
       myPressure.setModeBarometer();
       myPressure.setOversampleRate(7);
       myPressure.enableEventFlags();
@@ -85,36 +123,55 @@ void loop()
       Serial.print("Humidity = ");
       Serial.print(humidity);
       Serial.print("%,");
-      float temp_h = myHumidity.readTemperature();
+      temp_h = myHumidity.readTemperature();
       Serial.print(" temp_h = ");
       Serial.print(temp_h, 2);
       Serial.print("C,");
 
       //Check Pressure Sensor
-      float pressure = myPressure.readPressure();
+      pressure = myPressure.readPressure();
       Serial.print(" Pressure = ");
       Serial.print(pressure);
       Serial.print("Pa,");
 
       //Check tempf from pressure sensor
-      float tempf = myPressure.readTempF();
-      Serial.print(" temp_p = ");
+      tempf = myPressure.readTempF();
+      Serial.print(" temp_f = ");
       Serial.print(tempf, 2);
       Serial.print("F,");
 
       //Check light sensor
-      float light_lvl = get_light_level();
+      light_lvl = get_light_level();
       Serial.print(" light_lvl = ");
       Serial.print(light_lvl);
       Serial.print("V,");
 
       //Check batt level
-      float batt_lvl = get_battery_level();
+      batt_lvl = get_battery_level();
       Serial.print(" VinPin = ");
       Serial.print(batt_lvl);
       Serial.print("V");
 
       Serial.println();
+
+      // This custom function works somewhat like a serial.print.
+      //  You can send it an array of chars (string) and it'll print
+      //  the first 4 characters in the array.
+      
+      //print temperature based on humidity
+      temp_h = temp_h* (9.0 / 5.0) + 32.0; //Convert degrees Celsius to Fahrenheit
+      degreesF_int = temp_h * 100;
+      Serial.println(degreesF_int);
+      sprintf(tempString, "%4d", degreesF_int);
+
+      // This will output the tempString to the S7S
+      s7sSendStringSPI(tempString);
+
+      // Print the decimal at the proper spot
+      if (tempf > 100)
+        setDecimalsSPI(0b00100100);  // Sets digit 3 decimal on
+      else
+        setDecimalsSPI(0b00100010);
     }
 
     digitalWrite(STAT_BLUE, LOW); //Turn off stat LED
@@ -122,6 +179,60 @@ void loop()
 
   delay(100);
 }
+
+// This custom function works somewhat like a serial.print.
+//  You can send it an array of chars (string) and it'll print
+//  the first 4 characters in the array.
+void s7sSendStringSPI(String toSend)
+{
+  digitalWrite(ssPin, LOW);
+  SPI.transfer(0x79); // Send the Move Cursor Command
+  SPI.transfer(0x00); // Send the data byte between 0 and 3
+  for (int i = 0; i < 3; i++)
+  {
+    SPI.transfer(toSend[i]);
+    Serial.print(toSend[i]);
+  }
+  SPI.transfer(0x7E); // Individual Segment Control for Digit Position 4
+  SPI.transfer(0b01110001); // Display an F
+
+  digitalWrite(ssPin, HIGH);
+
+}
+
+// Send the clear display command (0x76)
+//  This will clear the display and reset the cursor
+void clearDisplaySPI()
+{
+  digitalWrite(ssPin, LOW);
+  SPI.transfer(0x76);  // Clear display command
+  digitalWrite(ssPin, HIGH);
+}
+
+// Set the displays brightness. Should receive byte with the value
+//  to set the brightness to
+//  dimmest------------->brightest
+//     0--------127--------255
+void setBrightnessSPI(byte value)
+{
+  digitalWrite(ssPin, LOW);
+  SPI.transfer(0x7A);  // Set brightness command byte
+  SPI.transfer(value);  // brightness data byte
+  digitalWrite(ssPin, HIGH);
+}
+
+// Turn on any, none, or all of the decimals.
+//  The six lowest bits in the decimals parameter sets a decimal
+//  (or colon, or apostrophe) on or off. A 1 indicates on, 0 off.
+//  [MSB] (X)(X)(Apos)(Colon)(Digit 4)(Digit 3)(Digit2)(Digit1)
+void setDecimalsSPI(byte decimals)
+{
+  digitalWrite(ssPin, LOW);
+  SPI.transfer(0x77);
+  SPI.transfer(decimals);
+  digitalWrite(ssPin, HIGH);
+}
+
 
 //Returns the voltage of the light sensor based on the 3.3V rail
 //This allows us to ignore what VCC might be (an Arduino plugged into USB has VCC of 4.5 to 5.2V)
